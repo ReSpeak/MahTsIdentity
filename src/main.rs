@@ -1,8 +1,7 @@
-use base64;
 use rayon::prelude::*;
 use structopt::StructOpt;
 use tsproto::crypto::{EccKeyPrivP256, EccKeyPubP256};
-use byteorder::{LittleEndian, BigEndian, ByteOrder, ReadBytesExt};
+use byteorder::{BigEndian, ByteOrder, ReadBytesExt};
 
 #[derive(StructOpt, Debug)]
 #[structopt(about, author)]
@@ -49,13 +48,23 @@ fn main() {
 }
 
 fn gen_single(patt: &[FindPattern]) -> bool {
-	let tp_priv = EccKeyPrivP256::create().unwrap();
-	let tp_pub: EccKeyPubP256 = (&tp_priv).into();
-	let uid = tp_pub.get_uid_no_base64().unwrap();
+	let (priv_key, pub_key) = ring::signature::EcdsaKeyPair::generate_key_pair(
+		&ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+		&ring::rand::SystemRandom::new(),
+	).unwrap();
+
+	// Compute uid
+	let pub_key = EccKeyPubP256::from_short(pub_key);
+	let hash = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY,
+		pub_key.to_ts().unwrap().as_bytes());
+	let uid = hash.as_ref();
+
 	for p in patt {
 		if BigEndian::read_u64(&uid[0..8]) & p.mask == p.text {
+			let tp_priv = EccKeyPrivP256::from_short(priv_key).unwrap();
 			let export = tp_priv.to_ts().unwrap();
-			println!("UID: {} KEY: {}", tp_pub.get_uid().unwrap(), export);
+			println!("UID: {} KEY: {} UID: {}", pub_key.get_uid().unwrap(),
+				export, pub_key.get_uid().unwrap());
 			return true;
 		}
 	}

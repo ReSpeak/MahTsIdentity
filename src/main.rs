@@ -38,9 +38,8 @@ fn main() {
 		}
 		text &= mask;
 		patterns.push(FindPattern { text, mask });
+		println!{"Patterns: {:X} {:X}", text, mask};
 	}
-
-	println!{"{:?}", patterns};
 	//return;
 
 	//let patt = opts.pattern.into_iter().map(|p| p.into_bytes()).collect::<Vec<_>>();
@@ -63,8 +62,7 @@ fn gen_single(patt: &[FindPattern]) -> bool {
 		if BigEndian::read_u64(&uid[0..8]) & p.mask == p.text {
 			let tp_priv = EccKeyPrivP256::from_short(priv_key).unwrap();
 			let export = tp_priv.to_ts().unwrap();
-			println!("UID: {} KEY: {} UID: {}", pub_key.get_uid().unwrap(),
-				export, pub_key.get_uid().unwrap());
+			println!("UID: {} KEY: {}", pub_key.get_uid().unwrap(), export);
 			return true;
 		}
 	}

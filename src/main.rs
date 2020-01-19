@@ -1,13 +1,20 @@
+use base64;
 use rayon::prelude::*;
 use structopt::StructOpt;
 use tsproto::crypto::{EccKeyPrivP256, EccKeyPubP256};
+use byteorder::{LittleEndian, BigEndian, ByteOrder, ReadBytesExt};
 
 #[derive(StructOpt, Debug)]
 #[structopt(about, author)]
 struct Opts {
-	/// Sets a custom config file. Could have been an Option<T> with no default too
 	#[structopt()]
 	pattern: Vec<String>,
+}
+
+#[derive(Debug)]
+struct FindPattern{
+	text: u64,
+	mask: u64,
 }
 
 fn main() {
@@ -18,37 +25,44 @@ fn main() {
 		return;
 	}
 
-	let patt = opts.pattern.into_iter().map(|p| p.into_bytes()).collect::<Vec<_>>();
-	gen_bench_para(&patt);
+	let mut patterns = vec![];
+	for inp in opts.pattern {
+		let mut pattern_padded = inp.clone();
+		pattern_padded.push_str(&"A".repeat(inp.len() % 4));
+		let mut target_bytes = base64::decode(&pattern_padded).unwrap();
+		for _ in (target_bytes.len())..8 { target_bytes.push(0); }
+		let mut text = BigEndian::read_u64(&target_bytes[0..8]);
+
+		let mut mask = 0u64;
+		for i in 0..std::cmp::min(inp.len(), 10) {
+			mask |= 0x3F << 58 - (6 * i);
+		}
+		text &= mask;
+		patterns.push(FindPattern { text, mask });
+	}
+
+	println!{"{:?}", patterns};
+	//return;
+
+	//let patt = opts.pattern.into_iter().map(|p| p.into_bytes()).collect::<Vec<_>>();
+	gen_bench_para(&patterns);
 }
 
-fn gen_single(patt: &[Vec<u8>]) -> bool {
+fn gen_single(patt: &[FindPattern]) -> bool {
 	let tp_priv = EccKeyPrivP256::create().unwrap();
 	let tp_pub: EccKeyPubP256 = (&tp_priv).into();
 	let uid = tp_pub.get_uid_no_base64().unwrap();
 	for p in patt {
-		if uid.starts_with(p) {
+		if BigEndian::read_u64(&uid[0..8]) & p.mask == p.text {
 			let export = tp_priv.to_ts().unwrap();
-			println!("MATCH {} KEY: {} UID: {}", String::from_utf8(p.to_vec()).unwrap(), export, tp_pub.get_uid().unwrap());
+			println!("UID: {} KEY: {}", tp_pub.get_uid().unwrap(), export);
 			return true;
 		}
 	}
 	false
 }
 
-// fn _gen_bench() {
-// 	//let mut cnt = 0usize;
-
-// 	for _ in 0..50000 {
-// 		gen_single();
-// 		//cnt += 1;
-// 		//if cnt % 10000 == 0 {
-// 		//	println!("STEP: {}", cnt);
-// 		//}
-// 	}
-// }
-
-fn gen_bench_para(patt: &[Vec<u8>]) {
+fn gen_bench_para(patt: &[FindPattern]) {
 	//rayon::ThreadPoolBuilder::new().num_threads(12).build_global().unwrap();
 	let mut found_any = false;
 	while !found_any {
@@ -58,17 +72,3 @@ fn gen_bench_para(patt: &[Vec<u8>]) {
 	}
 	println!("Done");
 }
-
-// fn gen_bench_para_man(patt: Vec<String>) {
-// 	let mut handlers = vec![];
-// 	for _ in 0..12 {
-// 		let pattc = patt.clone();
-// 		handlers.push(thread::spawn(move || {
-// 			loop {
-// 				gen_single(&pattc);
-// 			}
-// 		}));
-// 	}
-// 	let any = handlers.pop().unwrap();
-// 	any.join().unwrap();
-// }

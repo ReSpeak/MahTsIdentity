@@ -8,8 +8,8 @@ edition = "2018"
 lto = true
 
 [dependencies]
-#flakebi-ring = "0.16.9"
-#failure = "0.1.6"
-tsproto = { path = "../tsclientlib/tsproto", version="=0.1.0" }
+base64 = "0.10"
 rayon = "1.3.0"
 structopt = "0.3.8"
+tsproto = { path = "../tsclientlib/tsproto", version="=0.1.0" }
+byteorder = "1.3.2"

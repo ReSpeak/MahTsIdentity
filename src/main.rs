@@ -18,18 +18,18 @@ struct Opts {
 fn main() {
 	let opts: Opts = Opts::from_args();
 
-	//let sv = vec! [ "spl".into() ];
-	gen_bench_para(&opts.pattern);
+	let patt = opts.pattern.into_iter().map(|p| p.into_bytes()).collect();
+	gen_bench_para(&patt);
 }
 
-fn gen_single(patt: &Vec<String>) -> bool {
+fn gen_single(patt: &Vec<Vec<u8>>) -> bool {
 	let tp_priv = EccKeyPrivP256::create().unwrap();
 	let tp_pub: EccKeyPubP256 = (&tp_priv).into();
-	let uid = tp_pub.get_uid().unwrap();
+	let uid = tp_pub.get_uid_no_base64().unwrap();
 	for p in patt {
 		if uid.starts_with(p) {
 			let export = tp_priv.to_ts().unwrap();
-			println!("MATCH {} KEY: {}", p, export);
+			println!("MATCH {} KEY: {}", String::from_utf8(p.to_vec()).unwrap(), export);
 			return true;
 		}
 	}
@@ -48,7 +48,7 @@ fn gen_single(patt: &Vec<String>) -> bool {
 // 	}
 // }
 
-fn gen_bench_para(patt: &Vec<String>) {
+fn gen_bench_para(patt: &Vec<Vec<u8>>) {
 	//rayon::ThreadPoolBuilder::new().num_threads(12).build_global().unwrap();
 	let mut found_any = false;
 	while !found_any {

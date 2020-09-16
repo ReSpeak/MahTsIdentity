@@ -1,9 +1,11 @@
-use rayon::prelude::*;
-use structopt::StructOpt;
-use tsproto::crypto::{EccKeyPrivP256, EccKeyPubP256};
-use tsproto::algorithms::get_hash_cash_level;
-use byteorder::{BigEndian, ByteOrder};
 use std::time::{Instant, Duration};
+
+use byteorder::{BigEndian, ByteOrder};
+use rayon::prelude::*;
+use flakebi_ring::signature;
+use structopt::StructOpt;
+use tsproto_types::crypto::{EccKeyPrivP256, EccKeyPubP256};
+use tsproto::algorithms::get_hash_cash_level;
 
 type Result = std::result::Result<(), String>;
 
@@ -57,7 +59,7 @@ struct Level {
 
 fn main() {
 	let opts: Opts = Opts::from_args();
-	
+
 	if let Some(t) = opts.threads {
 		rayon::ThreadPoolBuilder::new().num_threads(t).build_global().unwrap();
 	}
@@ -198,14 +200,14 @@ fn expect_time(dur: Duration, bits: u32) -> String {
 }
 
 fn find_pattern_sync(data: &RunData) -> bool {
-	let (priv_key, pub_key) = ring::signature::EcdsaKeyPair::generate_key_pair(
-		&ring::signature::ECDSA_P256_SHA256_ASN1_SIGNING,
-		&ring::rand::SystemRandom::new(),
+	let (priv_key, pub_key) = signature::EcdsaKeyPair::generate_key_pair(
+		&signature::ECDSA_P256_SHA256_ASN1_SIGNING,
+		&flakebi_ring::rand::SystemRandom::new(),
 	).unwrap();
 
 	// Compute uid
 	let pub_key = EccKeyPubP256::from_short(pub_key);
-	let hash = ring::digest::digest(&ring::digest::SHA1_FOR_LEGACY_USE_ONLY,
+	let hash = flakebi_ring::digest::digest(&flakebi_ring::digest::SHA1_FOR_LEGACY_USE_ONLY,
 		pub_key.to_ts().unwrap().as_bytes());
 	let uid = hash.as_ref();
 

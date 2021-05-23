@@ -8,10 +8,11 @@ edition = "2018"
 lto = true
 
 [dependencies]
-base64 = "0.12"
+base64 = "0.13"
 byteorder = "1.3.2"
 flakebi-ring = "0.16.15"
 rayon = "1.3.0"
 structopt = "0.3.8"
-tsproto = { git = "https://github.com/ReSpeak/tsclientlib", version="=0.1.0" }
+sha-1 = "0.9"
+tsproto = { git = "https://github.com/ReSpeak/tsclientlib", version="=0.2.0" }
 tsproto-types = { git = "https://github.com/ReSpeak/tsclientlib", version="=0.1.0" }

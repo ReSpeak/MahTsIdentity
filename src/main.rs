@@ -1,11 +1,12 @@
-use std::time::{Instant, Duration};
+use std::time::{Duration, Instant};
 
 use byteorder::{BigEndian, ByteOrder};
-use rayon::prelude::*;
 use flakebi_ring::signature;
+use rayon::prelude::*;
+use sha1::{Digest, Sha1};
 use structopt::StructOpt;
-use tsproto_types::crypto::{EccKeyPrivP256, EccKeyPubP256};
 use tsproto::algorithms::get_hash_cash_level;
+use tsproto_types::crypto::{EccKeyPrivP256, EccKeyPubP256};
 
 type Result = std::result::Result<(), String>;
 
@@ -21,7 +22,7 @@ struct Opts {
 	threads: Option<usize>,
 
 	#[structopt()]
-	/// All patterns to seatch for. Use an '_' as a wildcard.
+	/// All patterns to search for. Use an '_' as a wildcard.
 	patterns: Vec<String>,
 
 	#[structopt(short, long)]
@@ -31,19 +32,19 @@ struct Opts {
 	#[structopt(short, long)]
 	identity: Option<String>,
 
-	#[structopt(short="x", long)]
+	#[structopt(short = "x", long)]
 	/// Converts a private key to a ts-like obfucasted key which can be imported in the ts3 ui.
 	export: bool,
 
-	#[structopt(short="l", long)]
+	#[structopt(short = "l", long)]
 	/// Improves the security level of an identity
 	level: Option<u64>,
 }
 
+#[derive(Debug)]
 struct RunData {
 	patterns: Vec<FindPattern>,
 	exit_when_found: bool,
-	print_matches: bool,
 }
 
 #[derive(Debug)]
@@ -61,13 +62,16 @@ fn main() {
 	let opts: Opts = Opts::from_args();
 
 	if let Some(t) = opts.threads {
-		rayon::ThreadPoolBuilder::new().num_threads(t).build_global().unwrap();
+		rayon::ThreadPoolBuilder::new()
+			.num_threads(t)
+			.build_global()
+			.unwrap();
 	}
 
-	let result = (||{
+	let result = (|| {
 		if opts.export {
 			tool_export(opts)
-		} else if !opts.patterns.is_empty() {
+		} else if !opts.patterns.is_empty() || opts.bench {
 			tool_find_pattern(opts)
 		} else if opts.level.is_some() {
 			tool_improve_sec_level(opts)
@@ -88,28 +92,46 @@ fn main() {
 // Tool: export
 
 fn tool_export(opts: Opts) -> Result {
-	let identity = opts.identity.ok_or_else(|| "Requires an identity (-i) to export")?;
+	let identity = opts
+		.identity
+		.ok_or_else(|| "Requires an identity (-i) to export")?;
 	let tp_priv = EccKeyPrivP256::import_str(&identity).map_err(|_| "Failed to read identity")?;
-	let export = tp_priv.to_ts_obfuscated().map_err(|_| "Failed to export identity")?;
+	let export = tp_priv.to_ts_obfuscated();
 	println!("KEY: {}", export);
 	Ok(())
 }
 
 // Tool: Find pattern
 
+const MAX_PATTERN_LEN: usize = 64 / 6;
+
 fn tool_find_pattern(opts: Opts) -> Result {
 	let time_per_bit = if opts.bench {
 		println!("Benching...");
 		Some(bench())
-	} else { None };
+	} else {
+		None
+	};
+
+	if opts.patterns.is_empty() {
+		println!("No further patterns specified, exiting.");
+		return Ok(());
+	}
 
 	let mut patterns = vec![];
 	for inp in &opts.patterns {
+		if inp.len() > MAX_PATTERN_LEN {
+			return Err("Invalid pattern input".to_string());
+		}
 		let mut mask_builder = [0u8; 28]; // The max number of chars in a UID including the '=' at the end
 		let mut char_builder = String::with_capacity(28);
 		let mut i = 0;
 		for c in inp.chars() {
-			if c == '+' || c == '/' || (c >= '0' && c <= '9') || (c >= 'A' && c <= 'Z') || (c >= 'a' && c <= 'z') {
+			if c == '+'
+				|| c == '/' || (c >= '0' && c <= '9')
+				|| (c >= 'A' && c <= 'Z')
+				|| (c >= 'a' && c <= 'z')
+			{
 				mask_builder[i] = 0b0011_1111;
 				char_builder.push(c);
 				i += 1;
@@ -120,7 +142,9 @@ fn tool_find_pattern(opts: Opts) -> Result {
 			} else {
 				return Err("Invalid pattern input".to_string());
 			}
-			if i >= mask_builder.len() - 1 { break; }
+			if i >= mask_builder.len() - 1 {
+				break;
+			}
 		}
 		for _ in i..27 {
 			char_builder.push('A');
@@ -137,7 +161,7 @@ fn tool_find_pattern(opts: Opts) -> Result {
 
 		text &= mask;
 		patterns.push(FindPattern { text, mask });
-		print!("Patterns: {} {:#010b} {:#010b}", char_builder, text, mask);
+		print!("Patterns: {} {:#066b} {:#066b}", char_builder, text, mask);
 		if let Some(t) = time_per_bit {
 			print!(" {}", expect_time(t, mask.count_ones()));
 		}
@@ -147,36 +171,33 @@ fn tool_find_pattern(opts: Opts) -> Result {
 	let data = RunData {
 		patterns,
 		exit_when_found: opts.exit_when_found,
-		print_matches: true
 	};
-	find_pattern_parallel(&data);
+
+	find_pattern_parallel::<false>(&data);
 	println!("Done");
 	Ok(())
 }
 
 fn bench() -> Duration {
 	let data = RunData {
-		exit_when_found: true,
-		print_matches: false,
-		patterns: vec! [
-			FindPattern {
-				text: 0,
-				mask: 0b111111_111111_000000_000000_0000000000000000000000000000000000000000
-			}
-		]
+		exit_when_found: false,
+		patterns: vec![FindPattern {
+			text: 0,
+			mask: 0b111111_111111_111111_111111_111111_111111_111111_111111_111111_111111_0000,
+		}],
 	};
 
 	let now = Instant::now();
-	let iters = 100;
-	for _ in 0..iters {
-		find_pattern_parallel(&data);
+	const ITERS: u32 = 5;
+	for i in 0..ITERS {
+		println!("Iter {}/{}", i + 1, ITERS);
+		find_pattern_parallel::<true>(&data);
 	}
 	let elap = now.elapsed();
-	let time_per_run = elap.div_f64(iters as f64);
+	println!("Elapsed {:?}", elap);
+	let time_per_run = elap.div_f64((ITERS * FIND_PATTERN_BATCH_SIZE) as f64);
 	println!("Avg Run {:?}", time_per_run);
-	let time_per_bit = time_per_run.div_f64(2u32.pow(data.patterns[0].mask.count_ones()) as f64);
-	println!("Time per bit {:?}", time_per_bit);
-	time_per_bit
+	time_per_run // estimation time is 2^(timer_per_run)
 }
 
 fn expect_time(dur: Duration, bits: u32) -> String {
@@ -199,64 +220,78 @@ fn expect_time(dur: Duration, bits: u32) -> String {
 	format!("Expected time: ~ {:.2} {}", t, u)
 }
 
-fn find_pattern_sync(data: &RunData) -> bool {
+const FIND_PATTERN_BATCH_SIZE: u32 = 500_000u32;
+
+fn find_pattern_sync<const BENCH: bool>(data: &RunData) -> bool {
 	let (priv_key, pub_key) = signature::EcdsaKeyPair::generate_key_pair(
 		&signature::ECDSA_P256_SHA256_ASN1_SIGNING,
 		&flakebi_ring::rand::SystemRandom::new(),
-	).unwrap();
+	)
+	.unwrap();
 
 	// Compute uid
-	let pub_key = EccKeyPubP256::from_short(pub_key);
-	let hash = flakebi_ring::digest::digest(&flakebi_ring::digest::SHA1_FOR_LEGACY_USE_ONLY,
-		pub_key.to_ts().unwrap().as_bytes());
-	let uid = hash.as_ref();
+	let pub_key = EccKeyPubP256::from_short(&pub_key).unwrap();
+	let hash = Sha1::digest(pub_key.to_ts().as_bytes());
 
 	for p in &data.patterns {
-		if BigEndian::read_u64(&uid[0..8]) & p.mask == p.text {
-			if data.print_matches {
-				let tp_priv = EccKeyPrivP256::from_short(priv_key).unwrap();
-				let export = tp_priv.to_ts().unwrap();
-				println!("UID: {} KEY: {}", pub_key.get_uid().unwrap(), export);
+		if BigEndian::read_u64(&hash[0..8]) & p.mask == p.text {
+			if BENCH {
+				return false;
 			}
+			let tp_priv = EccKeyPrivP256::from_short(&priv_key).unwrap();
+			let export = tp_priv.to_ts();
+			println!("UID: {} KEY: {}", pub_key.get_uid(), export);
 			return data.exit_when_found;
 		}
 	}
 	false
 }
 
-fn find_pattern_parallel(data: &RunData) {
+fn find_pattern_parallel<const BENCH: bool>(data: &RunData) {
 	let mut found_any = false;
 	while !found_any {
-		found_any = (0..500_000).into_par_iter().any(|_| {
-			find_pattern_sync(data)
-		});
+		found_any = (0..FIND_PATTERN_BATCH_SIZE)
+			.into_par_iter()
+			.any(|_| find_pattern_sync::<BENCH>(data));
+		if BENCH {
+			return;
+		}
 	}
 }
 
 // Tool: Increase security level
 
 fn tool_improve_sec_level(opts: Opts) -> Result {
-	let identity = opts.identity.ok_or_else(|| "Requires an identity (-i) to export")?;
+	let identity = opts
+		.identity
+		.ok_or_else(|| "Requires an identity (-i) to export")?;
 	let tp_priv = EccKeyPrivP256::import_str(&identity).map_err(|_| "Failed to read identity")?;
-	let omega = tp_priv.to_pub().to_ts().map_err(|_| "Failed to convert identity")?;
+	let omega = tp_priv.to_pub().to_ts();
 
 	let mut start_off = opts.level.unwrap();
-	let mut best = Level { level: get_hash_cash_level(&omega, start_off), offset: start_off };
+	let mut best = Level {
+		level: get_hash_cash_level(&omega, start_off),
+		offset: start_off,
+	};
 	const BATCH_SIZE: u64 = 500_000;
 
 	let found_any = false;
 	while !found_any {
-		let max_res = (start_off..(start_off + BATCH_SIZE)).into_par_iter()
-		.map(|i| Level { level: get_hash_cash_level(&omega, i), offset: i})
-		.max_by(|x, y| x.level.cmp(&y.level))
-		.expect("No elements in max");
+		let max_res = (start_off..(start_off + BATCH_SIZE))
+			.into_par_iter()
+			.map(|i| Level {
+				level: get_hash_cash_level(&omega, i),
+				offset: i,
+			})
+			.max_by(|x, y| x.level.cmp(&y.level))
+			.expect("No elements in max");
 		if max_res.level > best.level {
 			best = max_res;
 			println!("LEVEL: {} OFFSET: {}", best.level, best.offset);
 		}
 		start_off += BATCH_SIZE;
 
-		if start_off % 100_000_000 < BATCH_SIZE {
+		if start_off & 0x07FF_FFFF < BATCH_SIZE {
 			println!("STEP: {}", (start_off / BATCH_SIZE) * BATCH_SIZE);
 		}
 	}

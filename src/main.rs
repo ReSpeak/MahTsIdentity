@@ -1,42 +1,42 @@
 use std::time::{Duration, Instant};
 
 use byteorder::{BigEndian, ByteOrder};
+use clap::Parser;
 use flakebi_ring::signature;
 use rayon::prelude::*;
 use sha1::{Digest, Sha1};
-use structopt::StructOpt;
 use tsproto::algorithms::get_hash_cash_level;
 use tsproto_types::crypto::{EccKeyPrivP256, EccKeyPubP256};
 
 type Result = std::result::Result<(), String>;
 
-#[derive(StructOpt, Debug)]
-#[structopt(about, author)]
+#[derive(Parser, Debug)]
+#[clap(about, author)]
 struct Opts {
-	#[structopt(short, long)]
+	#[clap(short, long)]
 	/// Stops searching after the first match.
 	exit_when_found: bool,
 
-	#[structopt(short, long)]
+	#[clap(short, long)]
 	/// Specifies how many threads should be used for the task. By default this will match the cpu cores/hyperthreads
 	threads: Option<usize>,
 
-	#[structopt()]
+	#[clap()]
 	/// All patterns to search for. Use an '_' as a wildcard.
 	patterns: Vec<String>,
 
-	#[structopt(short, long)]
+	#[clap(short, long)]
 	/// Run a small bench before starting the real search to add time estimates for all patterns.
 	bench: bool,
 
-	#[structopt(short, long)]
+	#[clap(short, long)]
 	identity: Option<String>,
 
-	#[structopt(short = "x", long)]
+	#[clap(short = 'x', long)]
 	/// Converts a private key to a ts-like obfucasted key which can be imported in the ts3 ui.
 	export: bool,
 
-	#[structopt(short = "l", long)]
+	#[clap(short, long)]
 	/// Improves the security level of an identity
 	level: Option<u64>,
 }
@@ -68,7 +68,7 @@ fn main() {
 			.unwrap();
 	}
 
-	let result = (|| {
+	let result = {
 		if opts.export {
 			tool_export(opts)
 		} else if !opts.patterns.is_empty() || opts.bench {
@@ -78,7 +78,7 @@ fn main() {
 		} else {
 			Err("No patters given, please call with wanted uid strings".to_string())
 		}
-	})();
+	};
 
 	std::process::exit(match result {
 		Ok(_) => 0,
@@ -92,9 +92,7 @@ fn main() {
 // Tool: export
 
 fn tool_export(opts: Opts) -> Result {
-	let identity = opts
-		.identity
-		.ok_or_else(|| "Requires an identity (-i) to export")?;
+	let identity = opts.identity.ok_or("Requires an identity (-i) to export")?;
 	let tp_priv = EccKeyPrivP256::import_str(&identity).map_err(|_| "Failed to read identity")?;
 	let export = tp_priv.to_ts_obfuscated();
 	println!("KEY: {}", export);
@@ -127,11 +125,7 @@ fn tool_find_pattern(opts: Opts) -> Result {
 		let mut char_builder = String::with_capacity(28);
 		let mut i = 0;
 		for c in inp.chars() {
-			if c == '+'
-				|| c == '/' || (c >= '0' && c <= '9')
-				|| (c >= 'A' && c <= 'Z')
-				|| (c >= 'a' && c <= 'z')
-			{
+			if c == '+' || c == '/' || c.is_ascii_alphanumeric() {
 				mask_builder[i] = 0b0011_1111;
 				char_builder.push(c);
 				i += 1;
@@ -152,8 +146,8 @@ fn tool_find_pattern(opts: Opts) -> Result {
 		char_builder.push('=');
 
 		let mut mask = 0u64;
-		for i in 0..10 {
-			mask |= (mask_builder[i] as u64) << 58 - (6 * i);
+		for (i, mask_b) in mask_builder.iter().copied().enumerate().take(10) {
+			mask |= (mask_b as u64) << (58 - (6 * i));
 		}
 
 		let target_bytes = base64::decode(&char_builder).unwrap();
@@ -262,9 +256,8 @@ fn find_pattern_parallel<const BENCH: bool>(data: &RunData) {
 // Tool: Increase security level
 
 fn tool_improve_sec_level(opts: Opts) -> Result {
-	let identity = opts
-		.identity
-		.ok_or_else(|| "Requires an identity (-i) to export")?;
+	let identity = opts.identity.ok_or("Requires an identity (-i) to export")?;
+	let want_level = opts.level.ok_or("Requires a level to reach")? as u8;
 	let tp_priv = EccKeyPrivP256::import_str(&identity).map_err(|_| "Failed to read identity")?;
 	let omega = tp_priv.to_pub().to_ts();
 
@@ -275,8 +268,7 @@ fn tool_improve_sec_level(opts: Opts) -> Result {
 	};
 	const BATCH_SIZE: u64 = 500_000;
 
-	let found_any = false;
-	while !found_any {
+	loop {
 		let max_res = (start_off..(start_off + BATCH_SIZE))
 			.into_par_iter()
 			.map(|i| Level {
@@ -288,6 +280,9 @@ fn tool_improve_sec_level(opts: Opts) -> Result {
 		if max_res.level > best.level {
 			best = max_res;
 			println!("LEVEL: {} OFFSET: {}", best.level, best.offset);
+			if best.level >= want_level {
+				break;
+			}
 		}
 		start_off += BATCH_SIZE;
 
